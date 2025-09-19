@@ -1,0 +1,50 @@
+-- Create the products table for inventory management
+CREATE TABLE products (
+    product_id SERIAL PRIMARY KEY,
+    sku VARCHAR(50) UNIQUE NOT NULL,
+    product_name VARCHAR(100) NOT NULL,
+    stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
+    low_stock_threshold INTEGER DEFAULT 10
+);
+
+-- Create the orders table to track customer orders
+CREATE TABLE orders (
+    order_id SERIAL PRIMARY KEY,
+    customer_name VARCHAR(100) NOT NULL,
+    order_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create the order_items table to link orders to products (many-to-many relationship)
+CREATE TABLE order_items (
+    order_item_id SERIAL PRIMARY KEY,
+    order_id INTEGER REFERENCES orders(order_id) ON DELETE CASCADE,
+    product_id INTEGER REFERENCES products(product_id),
+    quantity INTEGER NOT NULL CHECK (quantity > 0)
+);
+
+-- Create the shipments table to track delivery status
+CREATE TABLE shipments (
+    shipment_id SERIAL PRIMARY KEY,
+    order_id INTEGER UNIQUE REFERENCES orders(order_id) ON DELETE CASCADE,
+    shipment_status VARCHAR(20) NOT NULL CHECK (shipment_status IN ('Pending', 'In Transit', 'Delivered')),
+    tracking_number VARCHAR(50) UNIQUE,
+    shipment_date TIMESTAMP WITH TIME ZONE
+);
+
+-- Create a function to update stock levels when an order item is added
+CREATE OR REPLACE FUNCTION update_stock_on_order()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE products
+    SET stock_quantity = stock_quantity - NEW.quantity
+    WHERE product_id = NEW.product_id;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create a trigger to execute the function after an order item is inserted
+CREATE TRIGGER reduce_stock_after_order
+AFTER INSERT ON order_items
+FOR EACH ROW
+EXECUTE FUNCTION update_stock_on_order();
