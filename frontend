@@ -1,0 +1,141 @@
+import streamlit as st
+import pandas as pd
+import sys
+import os
+
+try:
+    import backend as db
+except ImportError:
+    st.error("Error: Could not import backend.py. Please ensure both frontend.py and backend.py are in the same directory.")
+    st.stop()
+
+# Initialize the database and tables (this function can be run once)
+db.create_table_and_insert_data()
+
+st.set_page_config(layout="wide")
+st.title("📦 Supply Chain Operations Manager")
+st.markdown("A dynamic dashboard to track inventory, manage orders, and monitor shipments.")
+
+# ==============================================================================
+# Business Insights Section
+# ==============================================================================
+st.header("📊 Business Insights")
+st.markdown("---")
+
+insights = db.get_business_insights()
+
+if insights:
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric(label="Total Products", value=insights['total_products'])
+    with col2:
+        st.metric(label="Pending Shipments", value=insights['pending_shipments'])
+    
+    st.markdown("---")
+    st.subheader("Inventory Stock Breakdown")
+    stock_df = insights['stock_breakdown']
+    if not stock_df.empty:
+        st.dataframe(stock_df, use_container_width=True, hide_index=True)
+    else:
+        st.warning("No stock data available.")
+else:
+    st.error("Could not load business insights. Please check the database connection in backend.py.")
+
+# ==============================================================================
+# READ & Filtering Section
+# ==============================================================================
+st.header("🔍 Product Viewer")
+st.markdown("---")
+
+# Aggregation Metrics (in a sidebar for better layout)
+st.sidebar.header("Key Inventory Metrics")
+metrics = db.get_key_metrics()
+if metrics:
+    st.sidebar.metric(label="Total Unique Products", value=metrics['total_products'])
+    st.sidebar.metric(label="Total Stock", value=f"{metrics['total_stock']:,.0f}")
+    st.sidebar.metric(label="Avg. Stock per Product", value=f"{metrics['avg_stock_per_product']:.2f}")
+else:
+    st.sidebar.error("Could not load key metrics.")
+
+# Filtering and Sorting Controls
+sort_option = st.radio(
+    "Sort by",
+    options=["None", "stock_quantity_asc", "stock_quantity_desc"],
+    format_func=lambda x: "None" if x == "None" else "Lowest Stock First" if x == "stock_quantity_asc" else "Highest Stock First"
+)
+
+# Fetch and display data
+products_df = db.fetch_products(sort_by=sort_option)
+
+if not products_df.empty:
+    st.subheader(f"Total Products Found: {len(products_df)}")
+    st.dataframe(products_df, use_container_width=True)
+else:
+    st.warning("No products found.")
+
+st.markdown("---")
+
+# ==============================================================================
+# CRUD Operations (Forms for C, U, D)
+# ==============================================================================
+st.header("🛒 Manage Inventory")
+st.markdown("---")
+
+col_add, col_update, col_delete = st.columns(3)
+
+# Create (Add Product)
+with col_add:
+    st.subheader("Add Product")
+    with st.form("add_product_form"):
+        sku = st.text_input("SKU", key="add_sku")
+        product_name = st.text_input("Product Name", key="add_product_name")
+        stock_quantity = st.number_input("Stock Quantity", min_value=0, step=1, key="add_stock")
+        submitted_add = st.form_submit_button("Add Product")
+        if submitted_add:
+            if sku and product_name:
+                db.add_product(sku, product_name, stock_quantity)
+                st.success(f"Product '{product_name}' added.")
+                st.experimental_rerun()
+            else:
+                st.error("SKU and Product Name are required.")
+
+# Update & Delete
+with col_update:
+    st.subheader("Update Product")
+    product_list = db.get_product_list()
+    if product_list:
+        selected_product_id = st.selectbox(
+            "Select a Product to Update",
+            options=[p['id'] for p in product_list],
+            format_func=lambda x: [p['name'] for p in product_list if p['id'] == x][0],
+            key="update_select"
+        )
+        new_quantity = st.number_input("New Stock Quantity", min_value=0, step=1, key="update_stock")
+        update_button = st.button("Update Stock")
+        if update_button:
+            db.update_product_stock(selected_product_id, new_quantity)
+            st.success("Stock updated successfully!")
+            st.experimental_rerun()
+    else:
+        st.warning("No products to update.")
+
+with col_delete:
+    st.subheader("Delete Product")
+    product_list_delete = db.get_product_list()
+    if product_list_delete:
+        selected_product_id_delete = st.selectbox(
+            "Select a Product to Delete",
+            options=[p['id'] for p in product_list_delete],
+            format_func=lambda x: [p['name'] for p in product_list_delete if p['id'] == x][0],
+            key="delete_select"
+        )
+        delete_button = st.button("Delete Product")
+        if delete_button:
+            db.delete_product(selected_product_id_delete)
+            st.success("Product deleted successfully!")
+            st.experimental_rerun()
+    else:
+        st.warning("No products to delete.")
+
+st.markdown("---")
+st.caption("Application powered by Streamlit and a database backend.")
