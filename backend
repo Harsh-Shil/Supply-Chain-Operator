@@ -1,0 +1,286 @@
+import psycopg2
+import pandas as pd
+from typing import List, Dict, Any
+import streamlit as st # Added for error handling in the Streamlit context
+
+# You will need to replace these with your actual database credentials
+DB_HOST = "localhost"
+DB_NAME = "SCO"
+DB_USER = "postgres"
+DB_PASSWORD = "Harry#17"
+
+def get_db_connection():
+    """
+    Establishes and returns a connection to the PostgreSQL database.
+    """
+    try:
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD
+        )
+        return conn
+    except psycopg2.OperationalError as e:
+        st.error(f"Error connecting to database: {e}")
+        return None
+
+def create_table_and_insert_data():
+    """
+    Creates the necessary tables for the supply chain application and inserts sample data.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+
+    cur = conn.cursor()
+    try:
+        # SQL to create the 'products' table for inventory management
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS products (
+                product_id SERIAL PRIMARY KEY,
+                sku VARCHAR(50) UNIQUE NOT NULL,
+                product_name VARCHAR(100) NOT NULL,
+                stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
+                low_stock_threshold INTEGER DEFAULT 10
+            );
+
+            -- SQL to create other tables (orders, shipments, etc.)
+            -- This ensures the backend has all the tables it might need.
+            CREATE TABLE IF NOT EXISTS orders (
+                order_id SERIAL PRIMARY KEY,
+                customer_name VARCHAR(100) NOT NULL,
+                order_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS order_items (
+                order_item_id SERIAL PRIMARY KEY,
+                order_id INTEGER REFERENCES orders(order_id) ON DELETE CASCADE,
+                product_id INTEGER REFERENCES products(product_id),
+                quantity INTEGER NOT NULL CHECK (quantity > 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS shipments (
+                shipment_id SERIAL PRIMARY KEY,
+                order_id INTEGER UNIQUE REFERENCES orders(order_id) ON DELETE CASCADE,
+                shipment_status VARCHAR(20) NOT NULL CHECK (shipment_status IN ('Pending', 'In Transit', 'Delivered')),
+                tracking_number VARCHAR(50) UNIQUE,
+                shipment_date TIMESTAMP WITH TIME ZONE
+            );
+        """)
+
+        # Check if products table is empty before inserting sample data
+        cur.execute("SELECT COUNT(*) FROM products;")
+        if cur.fetchone()[0] == 0:
+            sample_products = [
+                ('SKU-101', 'Widget X', 50, 10),
+                ('SKU-102', 'Gadget Y', 15, 5),
+                ('SKU-103', 'Thing Z', 120, 20),
+                ('SKU-104', 'Tool A', 5, 10),
+            ]
+            # SQL to insert initial sample data
+            cur.executemany("INSERT INTO products (sku, product_name, stock_quantity, low_stock_threshold) VALUES (%s, %s, %s, %s);", sample_products)
+            conn.commit()
+            print("Database tables created and sample data inserted.")
+        else:
+            print("Database tables already exist and are not empty. Skipping data insertion.")
+
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error creating tables or inserting data: {error}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def get_business_insights() -> Dict[str, Any]:
+    """
+    Calculates and returns key business insights for the dashboard.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return {}
+
+    try:
+        cur = conn.cursor()
+        
+        # SQL to get the total number of products
+        cur.execute("SELECT COUNT(*) FROM products;")
+        total_products = cur.fetchone()[0]
+
+        # SQL to get the number of pending shipments
+        cur.execute("SELECT COUNT(*) FROM shipments WHERE shipment_status = 'Pending';")
+        pending_shipments = cur.fetchone()[0]
+        
+        # SQL to create a breakdown of products by stock level
+        stock_breakdown_query = """
+            SELECT
+                CASE
+                    WHEN stock_quantity = 0 THEN 'Out of Stock'
+                    WHEN stock_quantity <= low_stock_threshold THEN 'Low Stock'
+                    ELSE 'In Stock'
+                END AS stock_status,
+                COUNT(*) AS product_count
+            FROM products
+            GROUP BY stock_status
+            ORDER BY product_count DESC;
+        """
+        stock_breakdown_df = pd.read_sql(stock_breakdown_query, conn)
+        
+        insights = {
+            'total_products': total_products,
+            'pending_shipments': pending_shipments,
+            'stock_breakdown': stock_breakdown_df
+        }
+        return insights
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error fetching business insights: {error}")
+        return {}
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def get_key_metrics() -> Dict[str, Any]:
+    """
+    Calculates and returns key aggregate metrics.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return {}
+    try:
+        # SQL to get total products, total stock, and average stock per product
+        query = """
+            SELECT
+                COUNT(*) AS total_products,
+                SUM(stock_quantity) AS total_stock,
+                AVG(stock_quantity) AS avg_stock_per_product
+            FROM products;
+        """
+        cur = conn.cursor()
+        cur.execute(query)
+        result = cur.fetchone()
+        
+        metrics = {
+            'total_products': result[0],
+            'total_stock': result[1],
+            'avg_stock_per_product': result[2]
+        }
+        return metrics
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error fetching key metrics: {error}")
+        return {}
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def fetch_products(sort_by: str = None) -> pd.DataFrame:
+    """
+    Fetches products from the database with optional sorting.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return pd.DataFrame()
+
+    try:
+        # Base SQL query to select products
+        query_parts = ["SELECT product_id, sku, product_name, stock_quantity FROM products WHERE 1=1"]
+        params = []
+        
+        if sort_by:
+            # Add ORDER BY clause based on the sort option
+            if sort_by == 'stock_quantity_asc':
+                query_parts.append("ORDER BY stock_quantity ASC")
+            elif sort_by == 'stock_quantity_desc':
+                query_parts.append("ORDER BY stock_quantity DESC")
+
+        final_query = " ".join(query_parts)
+        df = pd.read_sql(final_query, conn, params=params)
+        return df
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error fetching data: {error}")
+        return pd.DataFrame()
+    finally:
+        if conn:
+            conn.close()
+
+def get_product_list() -> List[Dict[str, Any]]:
+    """
+    Fetches a list of all products with their IDs and names for selection dropdowns.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        # SQL to get product ID and name
+        cur.execute("SELECT product_id, product_name FROM products ORDER BY product_name;")
+        products = cur.fetchall()
+        return [{"id": p[0], "name": p[1]} for p in products]
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error fetching product list: {error}")
+        return []
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def add_product(sku: str, product_name: str, stock_quantity: int):
+    """
+    Adds a new product to the database using an SQL INSERT statement.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO products (sku, product_name, stock_quantity) VALUES (%s, %s, %s);",
+            (sku, product_name, stock_quantity)
+        )
+        conn.commit()
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error adding product: {error}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def update_product_stock(product_id: int, new_quantity: int):
+    """
+    Updates the stock quantity of an existing product using an SQL UPDATE statement.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE products SET stock_quantity = %s WHERE product_id = %s;",
+            (new_quantity, product_id)
+        )
+        conn.commit()
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error updating product stock: {error}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def delete_product(product_id: int):
+    """
+    Deletes a product from the database using an SQL DELETE statement.
+    """
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM products WHERE product_id = %s;", (product_id,))
+        conn.commit()
+    except (Exception, psycopg2.Error) as error:
+        st.error(f"Error deleting product: {error}")
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
